@@ -1,0 +1,303 @@
+#!/bin/bash
+
+# Parse all the command line arguments
+
+TEMP=`getopt -o "n:p:m:hH:o:P:N:ic:C:s:v:I:" -l "name:,port:,mem:,hdd:,os:,help,password:net::,interactive,crypt:,cpu:,set:,volumegroup:,images:" -n mkvir -- "$@"`
+
+if [ $? != 0 ] ; then echo "Terminating..." >&2 ; exit 1 ; fi
+
+eval set -- "$TEMP"
+
+while true; do
+	case $1 in
+		-h|--help)
+			shift
+		;;
+		-n|--name)
+			name=$2
+			help=0
+			#echo "Name is $2" >&2
+			shift 2
+		;;
+		-P|--port)
+			port=$2
+			help=0
+			#echo "Port is $2" >&2
+			shift 2
+		;;
+		-m|--mem)
+			mem=$2
+			help=0
+			#echo "Memory is $2" >&2
+			shift 2
+		;;
+		-H|--hdd)
+			hdd=$2
+			help=0
+			#echo "Hard disk space is $2" >&2
+			shift 2
+		;;
+		-o|--os)
+			os=$2
+			help=0
+			#echo "Operating system is $2" >&2
+			shift 2
+		;;
+		-p|--password)
+			password=$2
+			help=0
+			#echo "Password set" >&2
+			shift 2
+		;;
+		-N|--net)
+			net=$2
+			help=0
+			#echo "Network accessibility set to $2" >&2
+			shift 2
+		;;
+		-c|--crypt)
+			crypt=$2
+			help=0
+			#echo "Encryption set to $2" >&2
+			shift 2
+		;;
+		-i|--interactive)
+			help=0
+			shift
+		;;
+		-C|--cpu)
+			cpu=$2
+			help=0
+			#echo "Number of cpu cores set to $2" >&2
+			shift 2
+		;;
+		-s|set)
+			cpuset=$2
+			help=0
+			#echo "Cpu units selected: $2" >&2
+			shift 2
+		;;
+		-v|--volumegroup)
+			vg=$2
+			help=0
+			#echo "Volume group set to $2" >&2
+			shift 2
+		;;
+		-I|--images)
+			imagepath=$2
+			help=0
+			shift 2
+		;;
+		\?)
+			echo " Unknow option -$1" >&2
+			exit 1
+		;;
+		:)
+			echo " -$1 requires an argument" >&2
+			exit 1
+		;;
+		--)
+			shift
+			break
+		;;
+	esac
+done
+# Handle help
+if [ -z "$help" ];
+then
+	echo " mkvir is a utility that automates the creation" >&2
+	echo " of virtual machines through libvirt. It is written" >&2
+	echo " for use with KVM on slackware based systems but it" >&2
+	echo " can be ported with little effort." >&2
+	echo "" >&2
+	echo " Dependencies: libvirt, lvm, iptables, virt-install (virt-tools), luks" >&2
+	echo "" >&2
+	echo " Valid options are:" >&2
+	echo "  -n|--name : REQUIRED the name of the virtual machine." >&2
+	echo "  -P|--port : REQUIRED the port at which the vpn server will listen." >&2
+	echo "  -m|--mem : REQUIRED the amount of RAM in GB." >&2
+	echo "  -H|--hdd : REQUIRED the amount of disk space in GB." >&2
+	echo "  -N|--net : OPTIONAL DEFAULT=true make the virtual." >&2
+	echo " 		  machine network accessible." >&2
+	echo "  -c|--crypt : OPTIONAL DEFAUT=true encrypt root disk." >&2
+	echo "  -p|--password : REQUIRED vnc password. " >&2
+	echo "  -o|--os : REQUIRED operating system. " >&2
+	echo "  -I|--images : OPTIONAL path to operating system images. " >&2
+	echo "  -i|--interactive : OPTIONAL interactive prompt." >&2
+	echo "  -C|--cpu : REQUIRED number of cpu cores." >&2
+	echo "  -s|--set : REQUIRED comma separated list of cores to use." >&2
+	echo "  -v|--volumegroup : OPTIONAL DEFAUT=vgvirt logical volume group to use." >&2
+	exit 1
+fi
+		
+# Now check if the given arguments are all present and valid
+
+if [ -z "$name" ]; 
+then 
+	read -p " Name: " pname
+	if [ -z "$pname" ]; then echo "You must choose a name with -n or --name." >&2; exit 1; else name=$pname; fi
+fi
+
+if [ -z "$port" ];
+then
+	read -p " Vnc Port: " pport
+	if [ -z "$pport" ]; then echo "You must select a port number with -P or --port." >&2; exit 1; else port=$pport; fi
+fi
+
+if [ -z "$mem" ];
+then
+	read -p " Memory(GB)[2]: " pmem
+	if [ -z "$pmem" ]; then mem=2; else mem=$pmem;fi
+fi
+mem=$[mem*1024]
+
+if [ -z "$hdd" ];
+then
+	read -p " Hard disk size(GB)[20]: " phdd
+	if [ -z "$phdd" ]; then hdd=20; else hdd=$phdd; fi
+fi
+
+if [ -z "$os" ];
+then
+	read -p " Operating system[Slackware]: " pos
+	if [ -z "$pos" ]; then os="Slackware"; else os=$pos; fi
+fi
+case $os in
+	Slackware|SlackWare|slackware)
+		os="slackware64-14.0-install-dvd.iso"
+	;;
+	Debian|debian)
+		os="debian-live-7.0.0-amd64-kde.desktop.iso"
+	;;
+	Knoppix|knoppix)
+		os="KNOPPIX_V7.0.5DVD-2012-12-21-EN.iso"
+	;;
+	*)
+		echo " Invalid choice. Os can be either Slackware or Debian." >&2
+		exit 1
+	;;
+esac
+
+if [ -z "$imagepath" ];
+then
+	read -p " Path to images[/root/images/]: " pimagepath
+	if [ -z "$pimagepath" ]; then imagepath="/root/images/"; else imagepath=$pimagepath; fi
+fi
+
+#todo check for trailing slash
+os=$imagepath+$os
+
+if [ -z "$password" ];
+then
+	read -s -p " Vnc password: " ppassword	
+	echo "" >&2
+	if [ -z "$ppassword" ]; then echo " You must choose a password with -p or --password." >&2; exit 1; 
+	else 
+		read -s -p " Verify password: " p2
+		echo "" >&2
+		if [ "$ppassword"=="$p2" ]
+		then
+			password=$ppassword
+		else
+			echo " Passwords do not match." >&2
+			exit 1
+		fi	
+	fi
+fi
+
+if [ -z "$net" ];
+then
+	read -p " Network accessible[true]: " pnet
+	if [ -z "$pnet" ]; then net=true; else net=$pnet; fi
+fi
+
+if [ "$net" != "false" & "$net" != "true" ]; then echo "Value of net must be either true or false." >&2; exit 1; fi
+
+if [ -z "$crypt" ];
+then
+	read -p " Encrypt root disk[true]: " pcrypt
+	if [ -z "$pcrypt" ]; then crypt=true; else crypt=$pcrypt; fi
+fi
+
+if [ "$crypt" != "false" & "$crypt" != "true" ]; then echo "Value of crypt must be either true or false." >&2; exit 1; fi
+
+if [ -z "$cpu" ];
+then
+	read -p " CPU cores[1]: " pcpu
+	if [ -z "$pcpu" ]; then cpu=1; else cpu=$pcpu; fi
+fi
+
+if [ -z "$cpuset" ];
+then
+	read -p " Physical CPU core to use[1]: " pcpuset
+	if [ -z "$pcpuset" ]; then cpuset=1; else cpuset=$pcpuset; fi
+fi
+
+if [ -z "$vg"'' ];
+then
+	read -p " Logical volume group[vgvirt]: " pvg
+	if [ -z "$pvg" ]; then vg="vgvirt"; else vg=$pvg; fi
+fi
+
+# Print summary and ask for consent
+echo " Summary"
+echo " A virtual machine with the name $name, $mem MB memoy, $cpu cpu core(s)" >&2
+echo " (physical cores: $cpuset), a 1 GB disk for swapping and a $hdd GB disk" >&2 
+echo " for the rest of the filesystem will be created in volumegroup $vg." >&2
+echo "" >&2
+if $crypt; then echo " The root disk will be encrypted." >&2; echo "" >&2; fi
+echo " It will be listening for vnc connections on port $port, protected with the" >&2
+echo " password you chose earlier." >&2
+if $net; then echo " It will be accessible from your lan." >&2; fi
+echo "" >&2
+echo " If you made a mistake or if you are not sure in any way, press CTRL+C NOW!" >&2
+read -p " If you want to continue, press RETURN" consent
+
+
+
+# Create logical volumes
+echo "Creating logial volumes" >&2
+
+lvcreate -L ${hdd}G -n ${name}root ${vg}
+lvcreate -L 1G -n ${name}swap ${vg}
+
+if $crypt
+then
+	echo "Encrypting root disk" >&2
+	cryptsetup -s 256 -y luksFormat /dev/${vg}/${name}root <&2
+	cryptsetup luksOpen /dev/${vg}/${name}root ${name}root <&2
+	path="/dev/mapper/${name}root"
+else
+	path="/dev/${vg}/${name}root"
+fi
+
+echo "Creating virtual machine" >&2
+# removed options (for portability, they are set correctly by default)
+# --connect=qemu:///system \
+# --virt-type kvm \
+virt-install \
+	--name=${name} \
+	--ram=${mem} \
+	--vcpus=${cpu} \
+	--cpuset=${cpuset} \
+	--cpu host \
+	--cdrom=${os} \
+	--os-type=linux \
+	--os-variant=none \
+	--boot hd,cdrom,menu=on \
+	--disk path=${path},cache=none,bus=virtio \
+	--disk path=/dev/vgvirt/${name}swap,cache=none,bus=virtio \
+	--network bridge=br0,model=e1000 \
+	--graphics vnc,port=${port},password="${password}", \
+	--watchdog i6300esb,action=pause
+
+
+if $net
+then
+	echo "Configuring iptables" >&2
+	iptables -A INPUT -p tcp --dport ${port} -j ACCEPT -s 192.168.1.0/24
+	iptables -A INPUT -p udp --dport ${port} -j ACCEPT -s 192.168.1.0/24
+	iptables-save > /etc/iptables.conf
+fi
+
+echo "The installation of your new virtual machine was a success!"
